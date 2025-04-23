@@ -1,0 +1,332 @@
+<html>
+  <body>
+    <canvas id="pfd" width="500" height="400"></canvas>
+
+    <script>
+
+    const PFD_OPTS = {
+      lerpFactor : 0.1,
+
+      ladderMajorHalf   : 0.20,
+      ladderMinorHalf   : 0.15,
+      pitchPixelsPerDeg : null, // height / 40 if null
+      ladderFontSize    : 16,
+      edgePadding       : 2,
+      font              : "sans-serif",
+
+      skyColor   : "#1E90FF",
+      groundColor: "#9B5B04",
+
+      tapeWidth         : 65,
+      tapeBg            : "rgba(40, 40, 40, 0.6)",
+      tapeColour        : "#fff",
+      tapeTickLong      : 20,
+      tapeTickShort     : 10,
+      speedRange        : 100,
+      speedStep         : 10,
+      altitudeRange     : 1000,
+      altitudeStep      : 100,
+      readoutBoxW       : 50,
+      readoutBoxH       : 22,
+      readoutBorder     : "#fff",
+      readoutTextDeltaY : 5,
+
+      aircraftLineColour: "#fff",
+      aircraftLineWidth   : 3,
+
+      yawHeight      : 40,
+      yawVisibleRange: 60,
+      yawTickLong    : 15,
+      yawTickShort   : 8
+    };
+
+    class PFD
+    {
+      constructor(canvas, cfg = {})
+      {
+        this.canvas   = canvas;
+        this.ctx      = canvas.getContext("2d");
+        this.w        = canvas.width;
+        this.h        = canvas.height;
+        this.cfg      = Object.assign({}, PFD_OPTS, cfg);
+        this.pitch    = 0;
+        this.roll     = 0;
+        this.speed    = 0;
+        this.altitude = 0;
+        this.yaw      = 0;
+        this.target   = {
+          pitch   : 0,
+          roll    : 0,
+          speed   : 0,
+          altitude: 0,
+          yaw     : 0
+        };
+
+        this.pixPerDeg = this.cfg.pitchPixelsPerDeg || (this.h / 40);
+
+        this._raf  = null;
+        this._draw = this._draw.bind(this);
+        this.start();
+      }
+
+      goToPitch(v)
+      {
+        this.target.pitch = v;
+      }
+      goToRoll(v)
+      {
+        this.target.roll = v;
+      }
+      goToSpeed(v)
+      {
+        this.target.speed = v;
+      }
+      goToAlt(v)
+      {
+        this.target.altitude = v;
+      }
+      goToYaw(v)
+      {
+        this.target.yaw = ((v % 360) + 360) % 360;
+      }
+
+      start()
+      {
+        if (!this._raf) 
+          this._raf = requestAnimationFrame(this._draw);
+      }
+      stop()
+      {
+        cancelAnimationFrame(this._raf);
+        this._raf=null;
+      }
+
+      _lerp(a,b)
+      {
+        return a + (b - a) * this.cfg.lerpFactor;
+      }
+
+      _angleLerp(a,b)
+      {
+        let d = ((b - a + 540) % 360) - 180;
+        return a + d * this.cfg.lerpFactor;
+      }
+
+      _drawVerticalTape(x, value, range, step, align, labelFn)
+      {
+        const {ctx,cfg,h} = this;
+        const yTop  = h * 0.1;
+        const tapeH = h * 0.8;
+        const tapeW = cfg.tapeWidth;
+
+        ctx.fillStyle   = cfg.tapeBg;
+        ctx.fillRect(x, yTop, tapeW, tapeH);
+        ctx.strokeStyle = cfg.tapeColour;
+        ctx.strokeRect(x, yTop, tapeW, tapeH);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, yTop, tapeW, tapeH);
+        ctx.clip();
+
+        const pxPerUnit = tapeH / (range * 2);
+        const rounded   = Math.round(value / step) * step;
+        const tickLong  = cfg.tapeTickLong;
+        const tickShort = cfg.tapeTickShort;
+
+        for (let v = rounded - range; v <= rounded + range; v += step)
+        {
+          const y = yTop + tapeH/2 + (value - v) * pxPerUnit;
+          const isMajor = (v % (step*2) === 0);
+          const len = isMajor ? tickLong : tickShort;
+          const xStart = align === "left" ? x + 5 : x + tapeW - 5;
+          const dir    = align === "left" ? 1 : -1;
+
+          ctx.beginPath();
+          ctx.moveTo(xStart, y);
+          ctx.lineTo(xStart + dir * len, y);
+          ctx.stroke();
+
+          labelFn(v, y, isMajor);
+        }
+        ctx.restore();
+      }
+
+      _drawYaw()
+      {
+        const {ctx,cfg,w,h,yaw} = this;
+        const tapeH = cfg.yawHeight;
+        const tapeW = w * 0.6;
+        const xLeft = w/2 - tapeW/2;
+        const yTop  = h - tapeH;
+
+        ctx.fillStyle   = cfg.tapeBg;
+        ctx.fillRect(xLeft, yTop, tapeW, tapeH);
+        ctx.strokeStyle = cfg.tapeColour;
+        ctx.strokeRect(xLeft, yTop, tapeW, tapeH);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(xLeft, yTop, tapeW, tapeH);
+        ctx.clip();
+
+        const range   = cfg.yawVisibleRange;
+        const pxPerDeg = tapeW / (range*2);
+        const rounded  = Math.round(yaw / 10) * 10;
+
+        for (let v = rounded - range; v <= rounded + range; v += 10)
+        {
+          const hdg = (v + 360) % 360;
+          const x = xLeft + tapeW/2 + (v - yaw) * pxPerDeg;
+          const isMajor = (hdg % 30 === 0);
+          const len = isMajor ? cfg.yawTickLong : cfg.yawTickShort;
+          const yStart = yTop + 5;
+
+          ctx.beginPath();
+          ctx.moveTo(x, yStart);
+          ctx.lineTo(x, yStart + len);
+          ctx.stroke();
+
+          if (isMajor)
+          {
+            ctx.font = `12px ${cfg.font}`;
+            ctx.textAlign = "center";
+            ctx.fillStyle = "#fff";
+            ctx.fillText(String(hdg).padStart(3,"0"), x, yStart + len + 12);
+          }
+        }
+        ctx.restore();
+      }
+
+      _draw()
+      {
+        this.pitch    = this._lerp(this.pitch,    this.target.pitch);
+        this.roll     = this._lerp(this.roll,     this.target.roll);
+        this.speed    = this._lerp(this.speed,    this.target.speed);
+        this.altitude = this._lerp(this.altitude, this.target.altitude);
+        this.yaw      = (this._angleLerp(this.yaw, this.target.yaw) + 360) % 360;
+
+        const {ctx,w,h,cfg} = this;
+        ctx.clearRect(0,0,w,h);
+
+        // horizon
+        ctx.save();
+        ctx.translate(w/2, h/2);
+        ctx.rotate(-this.roll * Math.PI/180);
+        ctx.translate(0, this.pitch * this.pixPerDeg);
+
+        // sky & ground
+        ctx.fillStyle = cfg.skyColor;
+        ctx.fillRect(-w*2, -h*2, w*4, h*2);
+        ctx.fillStyle = cfg.groundColor;
+        ctx.fillRect(-w*2, 0, w*4, h*2);
+
+        // horizon line
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-w*2, 0);
+        ctx.lineTo( w*2, 0);
+        ctx.stroke();
+
+        // pitch ladders
+        const halfMajor = w * cfg.ladderMajorHalf;
+        const halfMinor = w * cfg.ladderMinorHalf;
+        ctx.font        = cfg.ladderFontSize + `px ${cfg.font}`;
+        for (let deg = -90; deg <= 90; deg += 5)
+        {
+          if (deg === 0)
+            continue;
+          const y = -deg * this.pixPerDeg;
+          const half = (deg % 10 === 0) ? halfMajor : halfMinor;
+          ctx.beginPath();
+          ctx.moveTo(-half, y);
+          ctx.lineTo( half, y);
+          ctx.stroke();
+          if (deg % 10 === 0)
+          {
+            ctx.fillStyle = "#fff";
+            ctx.textAlign = "center";
+            ctx.fillText(Math.abs(deg), -half - 22, y + cfg.ladderFontSize/3);
+            ctx.fillText(Math.abs(deg),  half + 22, y + cfg.ladderFontSize/3);
+          }
+        }
+        ctx.restore();
+
+        // Speed tape
+        this._drawVerticalTape(0, this.speed, cfg.speedRange, cfg.speedStep, "right", (v,y,isMajor) =>
+        {
+          if (isMajor)
+          {
+            ctx.font = `12px ${cfg.font}`;
+            ctx.textAlign = "right";
+            ctx.fillStyle = "#fff";
+            ctx.fillText(String(v).padStart(3,"0"), cfg.tapeWidth - 30, y + 4);
+          }
+        });
+
+        // Altitude tape
+        this._drawVerticalTape(w - cfg.tapeWidth, this.altitude, cfg.altitudeRange, cfg.altitudeStep, "left", (v,y,isMajor) => {
+          if (isMajor)
+          {
+            ctx.font = `12px ${cfg.font}`;
+            ctx.textAlign = "left";
+            ctx.fillStyle = "#fff";
+            ctx.fillText(v, w - cfg.tapeWidth + 30, y + 4);
+          }
+        });
+
+        // Yaw tape
+        this._drawYaw();
+
+        const drawBox = (x, y, value) => {
+          ctx.fillStyle   = "#000";
+          ctx.fillRect(x, y, cfg.readoutBoxW, cfg.readoutBoxH);
+          ctx.strokeStyle = cfg.readoutBorder;
+          ctx.strokeRect(x, y, cfg.readoutBoxW, cfg.readoutBoxH);
+          ctx.font = `16px ${cfg.font}`;
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#fff";
+          ctx.fillText(value, x + cfg.readoutBoxW/2, y + cfg.readoutBoxH/2 + cfg.readoutTextDeltaY);
+        };
+        drawBox(cfg.edgePadding,                          h/2 - cfg.readoutBoxH/2,                Math.round(this.speed).toString().padStart(3,"0"));
+        drawBox(w - cfg.readoutBoxW - cfg.edgePadding,    h/2 - cfg.readoutBoxH/2,                Math.round(this.altitude));
+        drawBox((w - cfg.readoutBoxW)/2,                  h - cfg.readoutBoxH - cfg.edgePadding,  Math.round(this.yaw).toString().padStart(3,"0"));
+
+        // Static aircraft symbol
+        ctx.strokeStyle = cfg.aircraftLineColour;
+        ctx.lineWidth   = cfg.aircraftLineWidth;
+        ctx.beginPath();
+        ctx.moveTo(w*0.4, h/2);
+        ctx.lineTo(w*0.6, h/2);
+        ctx.stroke();
+
+        this._raf = requestAnimationFrame(this._draw);
+      }
+    }
+
+    //////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////////////////////
+
+    const pfd = new PFD(document.getElementById("pfd"));
+    window.pfd = pfd;
+
+    let t = 0;
+
+    function test()
+    {
+      t += 0.006;
+      pfd.goToRoll(Math.sin(t*0.7) * 30);
+      pfd.goToPitch(Math.sin(t*0.9) * 15);
+      pfd.goToSpeed(240 + Math.sin(t) * 40);
+      pfd.goToAlt(39000 + Math.sin(t*0.3) * 500);
+      pfd.goToYaw((t * 10) % 360);
+      requestAnimationFrame(test);
+    }
+
+    test();
+
+    </script>
+  </body>
+</html>
